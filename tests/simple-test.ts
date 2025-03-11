@@ -27,7 +27,7 @@ async function main() {
 
   // Initialize the Anthropic client
   const anthropic = new Anthropic({
-    anthropicApiKey: apiKey as string,
+    anthropicApiKey: apiKey as string, // Type assertion to fix linter error
     maxTokens: 1000,
     model: "claude-3-5-sonnet-20240620",
     maxResponseLength: 1000, // Allow longer responses for testing
@@ -35,19 +35,13 @@ async function main() {
 
   console.log("Anthropic client initialized");
 
-  // Test queries - mix of ones that should use tools and ones that shouldn't
+  // Test just a few queries
   const testQueries = [
-    // Queries that should use tools (factual, data retrieval, computation)
+    // Should use tool
     "What's the price of Bitcoin?",
-    "Search for a YouTube video about TypeScript",
-    "What's the weather in New York?",
 
-    // Queries that shouldn't use tools (general knowledge, creativity, opinions)
+    // Shouldn't use tool
     "Tell me a random joke",
-    "What's your opinion on artificial intelligence?",
-    "Write a short poem about sunset",
-    "What is the capital of France?",
-    "Explain how a combustion engine works",
   ];
 
   // Run the tests

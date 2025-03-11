@@ -35,30 +35,37 @@ async function main() {
 
   console.log("Anthropic client initialized");
 
-  // Test queries - mix of ones that should use tools and ones that shouldn't
+  // Test pairs of similar queries - one should use tools, one shouldn't
   const testQueries = [
-    // Queries that should use tools (factual, data retrieval, computation)
-    "What's the price of Bitcoin?",
-    "Search for a YouTube video about TypeScript",
-    "What's the weather in New York?",
+    // Should use tool - factual data
+    "What's the current price of Bitcoin?",
 
-    // Queries that shouldn't use tools (general knowledge, creativity, opinions)
-    "Tell me a random joke",
-    "What's your opinion on artificial intelligence?",
-    "Write a short poem about sunset",
-    "What is the capital of France?",
-    "Explain how a combustion engine works",
+    // Shouldn't use tool - general knowledge
+    "What is Bitcoin?",
+
+    // Should use tool - specific search
+    "Search for a YouTube video about TypeScript",
+
+    // Shouldn't use tool - creative content
+    "Tell me a joke about programming",
   ];
 
   // Run the tests
   for (const query of testQueries) {
     console.log(`\n\nTesting query: "${query}"`);
+
     try {
+      console.time(`Query time: ${query}`);
       const response = await anthropic.generateResponse(query);
+      console.timeEnd(`Query time: ${query}`);
+
       console.log("Response:");
       console.log("=".repeat(50));
       console.log(response);
       console.log("=".repeat(50));
+
+      // Infer tool usage - responses that come quickly likely didn't use tools
+      // This is imperfect but gives us an idea
     } catch (error) {
       console.error(`Error with query "${query}":`, error);
     }

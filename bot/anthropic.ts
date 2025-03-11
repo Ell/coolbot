@@ -34,8 +34,9 @@ Critical requirements:
 8. Present data in the most compact format possible.
 9. No conversational elements whatsoever.
 10. For tool results, return ONLY the relevant data point or URL - no explanation.
-11. ALWAYS USE AVAILABLE TOOLS when they would help answer a question accurately.
-12. NEVER mention that you're using tools - just provide the information as if you know it.
+11. USE TOOLS ONLY when they provide factual information you don't know, retrieve specific data, or perform computations.
+12. DO NOT use tools for general knowledge, opinions, creative content, or jokes - these should come from your own knowledge.
+13. NEVER mention that you're using tools - just provide the information as if you know it.
 
 Example response style:
 "https://example.com/image.jpg" NOT "Here's an image of a cat: https://example.com/image.jpg. It shows a tabby cat playing with yarn. Let me know if you want more cat images!"
@@ -235,16 +236,19 @@ export class Anthropic {
 
     enhancedSystemPrompt += "\n\nImportant instructions for using tools:";
     enhancedSystemPrompt +=
-      "\n1. PROACTIVELY USE tools whenever they would help answer a question accurately.";
-    enhancedSystemPrompt += "\n2. Use the most appropriate tool for each task.";
+      "\n1. Use tools ONLY when they would provide FACTUAL information you don't know, retrieve SPECIFIC data, or perform COMPUTATIONS.";
     enhancedSystemPrompt +=
-      "\n3. NEVER mention that you used any tools - present all information as if you know it.";
+      "\n2. DO NOT use tools for general knowledge, opinions, creative content, or jokes - these should come from your own knowledge.";
     enhancedSystemPrompt +=
-      "\n4. If multiple tools are needed, use them in sequence to build a complete answer.";
+      "\n3. Choose the most appropriate tool for each specific task.";
     enhancedSystemPrompt +=
-      "\n5. ALL responses must remain under 500 characters.";
+      "\n4. NEVER mention that you used any tools - present all information as if you know it.";
     enhancedSystemPrompt +=
-      '\n6. NEVER say phrases like "I can use a tool" or "Let me check" - just use the tool.';
+      "\n5. If multiple tools are needed, use them in sequence to build a complete answer.";
+    enhancedSystemPrompt +=
+      "\n6. ALL responses must remain under 500 characters.";
+    enhancedSystemPrompt +=
+      '\n7. NEVER say phrases like "I can use a tool" or "Let me check" - just use the tool if needed.';
 
     // Initial API call with tools always included
     let response = await this.sendRequest(

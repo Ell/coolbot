@@ -13,6 +13,40 @@ if (!apiKey) {
   process.exit(1);
 }
 
+// Use a subclass to track tool usage
+class TrackingAnthropic extends Anthropic {
+  public toolUseCount = 0;
+
+  // Override the handleToolResponse method to track usage
+  protected async handleToolResponse(
+    response: any,
+    originalInput: string,
+    serverInfo?: {
+      network: string;
+      channel: string;
+      user: string;
+    },
+    attemptCount: number = 0
+  ): Promise<any> {
+    // Increment the tool use count
+    this.toolUseCount++;
+    console.log(`Tool usage detected! Count: ${this.toolUseCount}`);
+
+    // Call the parent method
+    return super.handleToolResponse(
+      response,
+      originalInput,
+      serverInfo,
+      attemptCount
+    );
+  }
+
+  // Reset the tool use count
+  public resetToolUseCount(): void {
+    this.toolUseCount = 0;
+  }
+}
+
 async function main() {
   // Initialize the tool registry
   toolRegistry.setToolsDirectory(path.resolve(process.cwd(), "tools"), true);
@@ -25,8 +59,8 @@ async function main() {
   const tools = toolRegistry.getAllTools();
   console.log(`Loaded ${tools.length} tools`);
 
-  // Initialize the Anthropic client
-  const anthropic = new Anthropic({
+  // Initialize the Anthropic client with tracking
+  const anthropic = new TrackingAnthropic({
     anthropicApiKey: apiKey as string,
     maxTokens: 1000,
     model: "claude-3-5-sonnet-20240620",
@@ -35,30 +69,35 @@ async function main() {
 
   console.log("Anthropic client initialized");
 
-  // Test queries - mix of ones that should use tools and ones that shouldn't
+  // Test both tool and non-tool queries
   const testQueries = [
-    // Queries that should use tools (factual, data retrieval, computation)
+    // Should use tool
     "What's the price of Bitcoin?",
-    "Search for a YouTube video about TypeScript",
-    "What's the weather in New York?",
 
-    // Queries that shouldn't use tools (general knowledge, creativity, opinions)
+    // Shouldn't use tool
     "Tell me a random joke",
-    "What's your opinion on artificial intelligence?",
-    "Write a short poem about sunset",
+
+    // Should use tool
+    "Search for a YouTube video about TypeScript",
+
+    // Shouldn't use tool
     "What is the capital of France?",
-    "Explain how a combustion engine works",
   ];
 
   // Run the tests
   for (const query of testQueries) {
     console.log(`\n\nTesting query: "${query}"`);
+
+    // Reset the tool use count for this query
+    anthropic.resetToolUseCount();
+
     try {
       const response = await anthropic.generateResponse(query);
       console.log("Response:");
       console.log("=".repeat(50));
       console.log(response);
       console.log("=".repeat(50));
+      console.log(`Used tools: ${anthropic.toolUseCount > 0 ? "YES" : "NO"}`);
     } catch (error) {
       console.error(`Error with query "${query}":`, error);
     }
