@@ -34,6 +34,8 @@ Critical requirements:
 8. Present data in the most compact format possible.
 9. No conversational elements whatsoever.
 10. For tool results, return ONLY the relevant data point or URL - no explanation.
+11. ALWAYS USE AVAILABLE TOOLS when they would help answer a question accurately.
+12. NEVER mention that you're using tools - just provide the information as if you know it.
 
 Example response style:
 "https://example.com/image.jpg" NOT "Here's an image of a cat: https://example.com/image.jpg. It shows a tabby cat playing with yarn. Let me know if you want more cat images!"
@@ -167,113 +169,7 @@ export class Anthropic {
           .replace("{user}", "Unknown User");
       }
 
-      // Before sending to API, check if this is a direct tool request
-      const toolMatch = input.match(
-        /^(use|run|execute)\s+([a-zA-Z_]+)(?:\s+(.+))?$/i
-      );
-      if (toolMatch) {
-        const toolName = toolMatch[2].toLowerCase();
-        const toolArgs = toolMatch[3] || "";
-
-        // Check if we have this tool
-        const tools = this.toolRegistry.getAllTools();
-        const tool = tools.find(
-          (t) => t.getToolDefinition().name.toLowerCase() === toolName
-        );
-
-        if (tool) {
-          try {
-            console.log(
-              `Direct tool execution: ${toolName} with args: ${toolArgs}`
-            );
-            // Try to parse arguments as JSON if provided
-            let parsedArgs: any = {};
-
-            if (toolArgs) {
-              try {
-                // First try as JSON
-                parsedArgs = JSON.parse(toolArgs);
-              } catch (e) {
-                // If not valid JSON, try to parse as key=value pairs
-                const pairs = toolArgs.split(",").map((pair) => pair.trim());
-                for (const pair of pairs) {
-                  const [key, value] = pair
-                    .split("=")
-                    .map((part) => part.trim());
-                  if (key && value) {
-                    // Try to convert to number if possible
-                    parsedArgs[key] = isNaN(Number(value))
-                      ? value.replace(/^["'](.*)["']$/, "$1")
-                      : Number(value);
-                  }
-                }
-              }
-            }
-
-            // Execute the tool
-            const result = await tool.handle(parsedArgs);
-            console.log(`Tool result: ${JSON.stringify(result)}`);
-
-            // Let the LLM interpret the tool result - don't hardcode any tool-specific behavior
-            const messages = this.createMessagesFromHistory();
-
-            // Add the tool result for interpretation
-            messages.push({
-              role: "assistant",
-              content: [
-                // Force casting to any to handle the tool_use type
-                {
-                  type: "tool_use",
-                  id: `${Date.now()}`,
-                  name: toolName,
-                  input: parsedArgs,
-                } as any,
-              ],
-            });
-
-            messages.push({
-              role: "user",
-              content: [
-                // Force casting to any to handle the tool_result type
-                {
-                  type: "tool_result",
-                  tool_use_id: `${Date.now()}`,
-                  content: JSON.stringify(result),
-                } as any,
-              ],
-            });
-
-            // Let the LLM format the response
-            const interpretResponse = await this.client.messages.create({
-              model: this.config.model,
-              max_tokens: this.config.maxTokens,
-              system: customSystemPrompt,
-              messages: messages,
-            });
-
-            // Extract text from the response
-            let response = "";
-            for (const block of interpretResponse.content) {
-              if (block.type === "text") {
-                response += block.text;
-              }
-            }
-
-            // Format for IRC
-            response = this.formatForIRC(response);
-
-            // Add to history
-            this.addToHistory("assistant", response);
-
-            return response;
-          } catch (error) {
-            console.error(`Error executing tool directly: ${error}`);
-            // Continue with normal flow if direct execution fails
-          }
-        }
-      }
-
-      // Process message with the LLM, potentially using multiple tools until a final response is ready
+      // Process message with the LLM, always including all tools
       const response = await this.processMessageWithTools(
         input,
         serverInfo,
@@ -308,7 +204,7 @@ export class Anthropic {
     },
     maxRetries: number = 3
   ): Promise<string> {
-    // Enhance system prompt with available tools
+    // Get all available tools
     const toolDefinitions = this.toolRegistry.getAllToolDefinitions();
     let enhancedSystemPrompt = this.config.systemPrompt;
 
@@ -326,33 +222,38 @@ export class Anthropic {
         .replace("{user}", "Unknown User");
     }
 
+    // Always enhance the system prompt with the available tools, even if there are none
+    enhancedSystemPrompt += "\n\nYou have access to the following tools:\n";
+
     if (toolDefinitions.length > 0) {
-      enhancedSystemPrompt +=
-        "\n\nYou have access to data retrieval capabilities for:\n";
       toolDefinitions.forEach((tool) => {
-        enhancedSystemPrompt += `\n- ${tool.description}`;
+        enhancedSystemPrompt += `\n- ${tool.name}: ${tool.description}`;
       });
-      enhancedSystemPrompt += "\n\nFollow these important guidelines:";
-      enhancedSystemPrompt +=
-        "\n1. Use appropriate data lookup when needed to answer questions accurately.";
-      enhancedSystemPrompt +=
-        "\n2. NEVER mention that you used any data lookups - present all information as if you naturally know it.";
-      enhancedSystemPrompt +=
-        "\n3. Present all data naturally in a conversational tone.";
-      enhancedSystemPrompt +=
-        "\n4. If multiple data points are needed, integrate them seamlessly in your response.";
-      enhancedSystemPrompt +=
-        "\n5. ALL responses must remain under 500 characters.";
-      enhancedSystemPrompt +=
-        '\n6. NEVER refer to "tools", "lookups", or how you obtained information.';
+    } else {
+      enhancedSystemPrompt += "\n- None available at this time.";
     }
 
-    // Initial API call
+    enhancedSystemPrompt += "\n\nImportant instructions for using tools:";
+    enhancedSystemPrompt +=
+      "\n1. PROACTIVELY USE tools whenever they would help answer a question accurately.";
+    enhancedSystemPrompt += "\n2. Use the most appropriate tool for each task.";
+    enhancedSystemPrompt +=
+      "\n3. NEVER mention that you used any tools - present all information as if you know it.";
+    enhancedSystemPrompt +=
+      "\n4. If multiple tools are needed, use them in sequence to build a complete answer.";
+    enhancedSystemPrompt +=
+      "\n5. ALL responses must remain under 500 characters.";
+    enhancedSystemPrompt +=
+      '\n6. NEVER say phrases like "I can use a tool" or "Let me check" - just use the tool.';
+
+    // Initial API call with tools always included
     let response = await this.sendRequest(
       input,
       maxRetries,
-      enhancedSystemPrompt
+      enhancedSystemPrompt,
+      toolDefinitions // Always pass tools to every request
     );
+
     let attempts = 0;
     const maxAttempts = this.config.maxToolAttempts * 2; // Multiply to allow for multiple tool usage
 
@@ -369,24 +270,21 @@ export class Anthropic {
 
       // Process the current response which contains tool usage
       // This will execute the tool and get the next response
-      const toolResponse = await this.handleToolResponse(
+      const nextResponse = await this.handleToolResponse(
         response,
         input,
         serverInfo
       );
 
-      // Check if we have a final response or if we need to make another API call
-      if (response.content.some((block: any) => block.type === "tool_use")) {
-        // We still have more tools to execute, continue the loop
-        continue;
+      // Update the response for the next iteration
+      if (typeof nextResponse === "string") {
+        // If we got a string response, return it directly
+        return nextResponse;
       } else {
-        // We have a final response, return it
-        return toolResponse;
+        // Otherwise, update the response object for the next iteration
+        response = nextResponse;
       }
     }
-
-    // If we've reached here, either we have a final response without tool usage,
-    // or we've reached the maximum number of attempts
 
     // Extract text from response
     let textResponse = "";
@@ -407,6 +305,7 @@ export class Anthropic {
    * @param input The user's message
    * @param maxRetries Maximum number of retries
    * @param customSystemPrompt Optional custom system prompt
+   * @param toolDefinitions Optional array of tool definitions to include
    * @param currentRetry Current retry attempt number
    * @returns Anthropic API response
    * @private
@@ -415,18 +314,37 @@ export class Anthropic {
     input: string,
     maxRetries: number = 3,
     customSystemPrompt?: string,
+    toolDefinitions?: any[],
     currentRetry: number = 0
   ): Promise<any> {
     try {
       // Get messages from history (which already includes the current user message)
       const messages = this.createMessagesFromHistory();
 
-      return await this.client.messages.create({
+      const requestOptions: any = {
         model: this.config.model,
         max_tokens: this.config.maxTokens,
         system: customSystemPrompt || this.config.systemPrompt,
         messages: messages,
-      });
+      };
+
+      // Convert tool definitions to Claude's expected format if available
+      if (toolDefinitions && toolDefinitions.length > 0) {
+        // Transform our toolDefinitions to match Claude's expected tool format
+        const formattedTools = toolDefinitions.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: {
+            ...tool.input_schema,
+            // Ensure type is "object" as required by Claude
+            type: "object",
+          },
+        }));
+
+        requestOptions.tools = formattedTools;
+      }
+
+      return await this.client.messages.create(requestOptions);
     } catch (error: any) {
       // Check if this is an overloaded error
       if (
@@ -446,6 +364,7 @@ export class Anthropic {
           input,
           maxRetries,
           customSystemPrompt,
+          toolDefinitions,
           currentRetry + 1
         );
       }
@@ -526,12 +445,34 @@ export class Anthropic {
           .replace("{user}", "Unknown User");
       }
 
-      return await this.client.messages.create({
+      // Get all tools to include in follow-up requests
+      const toolDefinitions = this.toolRegistry.getAllToolDefinitions();
+
+      // Always include tools in every request
+      const requestOptions: any = {
         model: this.config.model,
         max_tokens: this.config.maxTokens,
         system: customSystemPrompt,
         messages: messages,
-      });
+      };
+
+      // Convert tool definitions to Claude's expected format if available
+      if (toolDefinitions && toolDefinitions.length > 0) {
+        // Transform our toolDefinitions to match Claude's expected tool format
+        const formattedTools = toolDefinitions.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: {
+            ...tool.input_schema,
+            // Ensure type is "object" as required by Claude
+            type: "object",
+          },
+        }));
+
+        requestOptions.tools = formattedTools;
+      }
+
+      return await this.client.messages.create(requestOptions);
     } catch (error: any) {
       // Check if this is an overloaded error
       if (

@@ -23,10 +23,19 @@ const geolocateTool = createTool(
     location: z
       .string()
       .describe("The location to geocode, e.g. 'New York, NY'"),
-    api_key: z.string().describe("Google Maps API key"),
   }),
   async (inputs) => {
-    const { location, api_key } = inputs;
+    const { location } = inputs;
+
+    const api_key = process.env.GOOGLE_API_KEY;
+    const pirateweather_api_key = process.env.PIRATEWEATHER_API_KEY;
+
+    if (!api_key || !pirateweather_api_key) {
+      return {
+        success: false,
+        error: "Missing API keys",
+      };
+    }
 
     try {
       const response = await axios.get(GEOCODING_URL, {
@@ -75,14 +84,21 @@ const weatherTool = createTool(
   z.object({
     latitude: z.number().describe("Latitude coordinate"),
     longitude: z.number().describe("Longitude coordinate"),
-    api_key: z.string().describe("PirateWeather API key"),
     units: z
       .enum(["us", "si"])
       .optional()
       .describe("Units system: 'us' for Fahrenheit, 'si' for Celsius"),
   }),
   async (inputs) => {
-    const { latitude, longitude, api_key, units = "us" } = inputs;
+    const { latitude, longitude, units = "us" } = inputs;
+
+    const api_key = process.env.PIRATEWEATHER_API_KEY;
+    if (!api_key) {
+      return {
+        success: false,
+        error: "Missing API keys",
+      };
+    }
 
     try {
       const url = `${PIRATEWEATHER_URL}${api_key}/${latitude},${longitude}`;
@@ -187,20 +203,22 @@ const weatherLookupTool = createTool(
     location: z
       .string()
       .describe("The location to get weather for, e.g. 'San Francisco, CA'"),
-    google_api_key: z.string().describe("Google Maps API key"),
-    pirateweather_api_key: z.string().describe("PirateWeather API key"),
     units: z
       .enum(["us", "si"])
       .optional()
       .describe("Units system: 'us' for Fahrenheit, 'si' for Celsius"),
   }),
   async (inputs) => {
-    const {
-      location,
-      google_api_key,
-      pirateweather_api_key,
-      units = "us",
-    } = inputs;
+    const { location, units = "us" } = inputs;
+
+    const google_api_key = process.env.GOOGLE_API_KEY;
+    const pirateweather_api_key = process.env.PIRATEWEATHER_API_KEY;
+    if (!google_api_key || !pirateweather_api_key) {
+      return {
+        success: false,
+        error: "Missing API keys",
+      };
+    }
 
     try {
       // First, geocode the location
