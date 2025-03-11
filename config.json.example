@@ -1,0 +1,27 @@
+ {
+  "irc": {
+    "syncirc": {
+      "host": "irc.libera.chat",
+      "port": 6667,
+      "nicknames": ["coolbot", "coolbot_", "coolbot__"],
+      "username": "coolbot",
+      "realname": "a cool bot",
+      "rateLimit": {
+        "messages": 10,
+        "period": 1000
+      },
+      "channels": [
+        "#testbot"
+      ]
+    }
+  },
+  "tools": {
+    "enabled": true,
+    "directory": "./tools"
+  },
+  "bot": {
+    "maxResponseLength": 500,
+    "maxHistoryLength": 15,
+    "maxToolAttempts": 3
+  }
+}
