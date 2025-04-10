@@ -286,25 +286,19 @@ export class IrcBot {
         user: nickname,
       });
 
-      // Ensure the response is not empty
-      if (!response) {
-        console.warn(
-          `[${networkId}] Empty response generated for message: ${messageContent}`
-        );
-        connection.sendMessage(
-          responseTarget,
-          "Sorry, I couldn't generate a response."
+      // Skip sending empty responses (bot is choosing to stay silent)
+      if (!response || response.trim() === "") {
+        console.log(
+          `[${networkId}] Choosing not to respond to: "${messageContent}" (not tool-related)`
         );
         return;
       }
 
       // Send the response
       connection.sendMessage(responseTarget, response);
-      console.log(
-        `[${networkId}] ${connection.nickname} => ${responseTarget}: ${response}`
-      );
+      console.log(`[${networkId}] Bot: ${response}`);
     } catch (error) {
-      console.error("Error processing message:", error);
+      console.error("Error handling IRC message:", error);
     }
   }
 

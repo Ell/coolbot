@@ -112,7 +112,8 @@ async function getVideoDescription(videoId: string): Promise<string> {
 
     const videoUrl = `${YOUTUBE_VIDEO_URL}${videoId}`;
 
-    return `${title} [${durationStr}] | 👤 ${channelTitle} | 👍 ${likes} | 👀 ${views} | ${videoUrl}`;
+    // Updated format to match the system prompt requirement
+    return `Title: ${title} [${durationStr}] | By: ${channelTitle} | ${views} views | ${videoUrl}`;
   } catch (error) {
     console.error("Error getting video details:", error);
     throw error;
@@ -125,7 +126,7 @@ async function getVideoDescription(videoId: string): Promise<string> {
 async function getVideoBasicInfo(videoId: string): Promise<string> {
   const apiKey = getApiKey();
   const searchParams = new URLSearchParams({
-    part: "snippet,contentDetails",
+    part: "snippet,contentDetails,statistics",
     id: videoId,
     key: apiKey,
   });
@@ -164,9 +165,15 @@ async function getVideoBasicInfo(videoId: string): Promise<string> {
     }
     durationStr += seconds.toString().padStart(2, "0");
 
+    // Get view count if available
+    const views = video.statistics?.viewCount
+      ? groupIntDigits(parseInt(video.statistics.viewCount))
+      : "N/A";
+
     const videoUrl = `${YOUTUBE_VIDEO_URL}${videoId}`;
 
-    return `${title} [${durationStr}] | 👤 ${channelTitle} | ${videoUrl}`;
+    // Updated format to match the system prompt requirement
+    return `Title: ${title} [${durationStr}] | By: ${channelTitle} | ${views} views | ${videoUrl}`;
   } catch (error) {
     console.error("Error getting video basic info:", error);
     throw error;

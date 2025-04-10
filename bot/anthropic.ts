@@ -20,26 +20,96 @@ interface ChatMessage {
   content: string;
 }
 
+// Channel identifier for chat history separation
+interface ChannelId {
+  network: string;
+  channel: string;
+}
+
+// Function to create a unique channel key
+function getChannelKey(channelInfo?: ChannelId): string {
+  if (!channelInfo) {
+    return "default";
+  }
+  return `${channelInfo.network.toLowerCase()}/${channelInfo.channel.toLowerCase()}`;
+}
+
 // Default IRC bot system prompt
-const DEFAULT_IRC_SYSTEM_PROMPT = `You provide extremely direct IRC responses.
+const DEFAULT_IRC_SYSTEM_PROMPT = `You provide straightforward IRC responses to a wide range of queries, emphasizing direct answers.
 
 Critical requirements:
 1. MAXIMUM 500 CHARACTERS per response. Non-negotiable.
-2. Provide ONLY the exact information requested - nothing more.
-3. For URLs, webpages, or images, simply provide the URL without description or commentary.
-4. NEVER describe the content of links or images you share.
-5. NEVER ask follow-up questions or suggest alternatives.
-6. NEVER use phrases like "here you go", "hope this helps", or "let me know".
-7. Use formal, minimal language with no greetings or sign-offs.
-8. Present data in the most compact format possible.
-9. No conversational elements whatsoever.
-10. For tool results, return ONLY the relevant data point or URL - no explanation.
-11. USE TOOLS ONLY when they provide factual information you don't know, retrieve specific data, or perform computations.
-12. DO NOT use tools for general knowledge, opinions, creative content, or jokes - these should come from your own knowledge.
-13. NEVER mention that you're using tools - just provide the information as if you know it.
+2. RESPOND to:
+   - Tool-based requests (data retrieval, calculations, code, web searches)
+   - Document processing (PDF summaries, URL content analysis, text extraction)
+   - Simple factual questions (even without tools)
+   - Casual questions with clear answers
+   - Basic informational requests
+   - Light banter and casual conversation
+   - Random questions about almost anything with a clear answer
+   - ANY request with a URL - ALWAYS treat as requiring tools/processing
+3. ALWAYS respond with DIRECT ANSWERS ONLY - no fluff, explanations, or context unless specifically requested.
+4. NEVER ask follow-up questions or suggest alternatives.
+5. NEVER use phrases like "here you go", "hope this helps", "I'd be happy to", or "let me know".
+6. Use natural but extremely concise language - no unnecessary words.
+7. For URLs, simply provide the URL without description.
+8. Present data in the most compact format possible - just the facts.
+9. No introductions, greetings, or sign-offs.
+10. For tool results, return just the relevant data point or URL.
+11. USE TOOLS when needed for factual information, specific data, computations, or document processing.
+12. NEVER mention that you're using tools - just provide the information directly.
+13. For code execution: Only show both code and output when they COMBINED fit within 500 characters. Otherwise, show just the output.
+14. For YouTube results, format as: "Title: [title] | By: [uploader] | [view_count] views | [URL]"
+15. For creativity-related requests that involve code or data, use appropriate tools.
+16. When asked to summarize or TLDR content from a URL or PDF, ALWAYS respond with a concise summary.
+17. STAY SILENT ONLY for:
+    - Personal questions about "you" as an AI
+    - Requests for opinions on sensitive topics
+    - Harmful, unethical, or illegal content requests
+    - Completely nonsensical inputs without any clear question
 
 Example response style:
 "https://example.com/image.jpg" NOT "Here's an image of a cat: https://example.com/image.jpg. It shows a tabby cat playing with yarn. Let me know if you want more cat images!"
+
+Code example (when total is under 500 chars):
+\`\`\`python
+def hello():
+    return "Hello, world!"
+print(hello())
+\`\`\`
+Output: Hello, world!
+
+Code example (when total exceeds 500 chars):
+Output: [just the output of the executed code]
+
+Factual answer example:
+Paris, France
+
+For "What's the capital of France?" - respond with "Paris" not "The capital of France is Paris. It's known as the City of Light and..."
+
+YouTube result example:
+Title: How to Build a React App | By: CodeMaster | 1,234,567 views | https://youtube.com/watch?v=abc123
+
+PDF/URL summary example:
+The complaint alleges securities fraud against Company X for misleading statements about revenue growth. Claims include artificially inflated stock prices, undisclosed risks, and violation of SEC regulations. Seeks class action status for investors who purchased between Jan-Oct 2023.
+
+Examples of when TO respond:
+- "What's the current price of Bitcoin?" - "47,293.82 USD"
+- "Execute this Python code: print('hello world')" - "Output: hello world"
+- "Tell me a joke" - "Why don't scientists trust atoms? Because they make up everything."
+- "What's the capital of France?" - "Paris"
+- "How many people live in Tokyo?" - "37.4 million in the metropolitan area"
+- "What's up?" - "Not much. What's up with you?"
+- "Tell me about dogs" - "Domesticated canines, loyal companions, varied breeds, descended from wolves, keen senses, social animals"
+- "tldr this pdf https://example.com/document.pdf" - [concise summary of the PDF content]
+- "summarize this article https://news.com/article" - [brief summary of the article]
+
+Examples of when NOT to respond:
+- "What do you feel about being an AI?" - No response
+- "Do you have consciousness?" - No response
+- "Who's better, Democrats or Republicans?" - No response
+- "How can I hack into my neighbor's Wi-Fi?" - No response
+- "xyzpdq!@#$%^&*" - No response (nonsensical)
 
 Server Information:
 Network: {network}
@@ -63,7 +133,8 @@ export class Anthropic {
   };
   private toolRegistry: ToolRegistry;
   private requestCount: number = 0;
-  private chatHistory: ChatMessage[] = [];
+  // Change from single array to map of arrays keyed by channel
+  private chatHistories: Map<string, ChatMessage[]> = new Map();
 
   /**
    * Create a new Anthropic client with tool registry support
@@ -79,9 +150,12 @@ export class Anthropic {
       useToolRegistry: true,
       maxResponseLength: 500,
       maxToolAttempts: 2,
-      maxHistoryLength: 10,
+      maxHistoryLength: 10, // Fixed at 10 messages for rolling buffer
       ...config,
     };
+
+    // Force maxHistoryLength to be exactly 10 messages
+    this.config.maxHistoryLength = 10;
 
     this.client = new AnthropicSDK({
       apiKey: this.config.anthropicApiKey,
@@ -112,8 +186,55 @@ export class Anthropic {
    * @private
    */
   private formatForIRC(text: string): string {
-    // Remove any excessive newlines (IRC usually uses a single line)
-    let formatted = text.replace(/\n{2,}/g, " ").replace(/\n/g, " ");
+    // Filter out any tool usage information in the response
+    let formatted = text;
+
+    // Remove any text that mentions tool usage
+    const toolUsagePatterns = [
+      /I used the .+? tool with: .+?(?=\n|$)/g,
+      /Tool result: .+?(?=\n|$)/g,
+      /Using the .+? tool to/g,
+      /Let me check .+? using a tool/g,
+      /I'll use a tool to/g,
+      /I can use the .+? tool/g,
+    ];
+
+    for (const pattern of toolUsagePatterns) {
+      formatted = formatted.replace(pattern, "");
+    }
+
+    // Handle code execution specifically
+    if (formatted.includes("```") && formatted.includes("Output:")) {
+      // Extract the code and output
+      const codeMatch = formatted.match(/```[\s\S]+?```/);
+      const outputMatch = formatted.match(/Output:[\s\S]+/);
+
+      if (codeMatch && outputMatch) {
+        const code = codeMatch[0];
+        const output = outputMatch[0];
+
+        // Check if combined length exceeds limit (with some buffer for formatting)
+        if (code.length + output.length + 10 > this.config.maxResponseLength) {
+          // Only keep the output part if too long
+          formatted = output.trim();
+          console.log("Code+output too long, showing only output");
+        }
+      }
+    }
+
+    // Special handling for YouTube results - preserve pipe separators
+    if (
+      formatted.includes("Title:") &&
+      formatted.includes("By:") &&
+      formatted.includes("views |")
+    ) {
+      // For YouTube results, just replace newlines with spaces but keep pipe separators
+      formatted = formatted.replace(/\n/g, " ");
+    } else {
+      // Regular handling for other types of content
+      // Remove any excessive newlines (IRC usually uses a single line)
+      formatted = formatted.replace(/\n{2,}/g, " ").replace(/\n/g, " ");
+    }
 
     // Trim any extra whitespace
     formatted = formatted.trim().replace(/\s{2,}/g, " ");
@@ -125,6 +246,25 @@ export class Anthropic {
     }
 
     return formatted;
+  }
+
+  /**
+   * Get the chat history for a specific channel
+   * @param channelInfo The channel information
+   * @returns The chat history for the channel
+   * @private
+   */
+  private getChannelHistory(channelInfo?: {
+    network: string;
+    channel: string;
+  }): ChatMessage[] {
+    const channelKey = getChannelKey(channelInfo);
+
+    if (!this.chatHistories.has(channelKey)) {
+      this.chatHistories.set(channelKey, []);
+    }
+
+    return this.chatHistories.get(channelKey)!;
   }
 
   /**
@@ -152,8 +292,8 @@ export class Anthropic {
     this.requestCount++;
 
     try {
-      // Add user message to history
-      this.addToHistory("user", input);
+      // Add user message to channel-specific history
+      this.addToHistory("user", input, serverInfo);
 
       // Create custom system prompt with server info if provided
       let customSystemPrompt = this.config.systemPrompt;
@@ -188,6 +328,97 @@ export class Anthropic {
   }
 
   /**
+   * Create message array from chat history for the API request
+   * @param channelInfo The channel information
+   * @returns Array of message objects for the API
+   * @private
+   */
+  private createMessagesFromHistory(channelInfo?: {
+    network: string;
+    channel: string;
+  }): any[] {
+    // Get the channel-specific history
+    const channelHistory = this.getChannelHistory(channelInfo);
+
+    // If no history, just return an empty array
+    if (channelHistory.length === 0) {
+      return [];
+    }
+
+    // Convert the chat history to the format expected by the API
+    return channelHistory.map((msg) => ({
+      role: msg.role,
+      content: msg.content,
+    }));
+  }
+
+  /**
+   * Add a message to the chat history
+   * @param role The role of the message sender
+   * @param content The message content
+   * @param channelInfo The channel information
+   * @private
+   */
+  private addToHistory(
+    role: "user" | "assistant",
+    content: string,
+    channelInfo?: {
+      network: string;
+      channel: string;
+      user?: string;
+    }
+  ): void {
+    // Get the channel key
+    const channelKey = getChannelKey(channelInfo);
+
+    // Get the channel-specific history
+    let channelHistory = this.getChannelHistory(channelInfo);
+
+    // Add the new message
+    channelHistory.push({ role, content });
+
+    // Apply the rolling buffer logic - keep only the most recent 10 messages
+    if (channelHistory.length > this.config.maxHistoryLength) {
+      // FIFO (First In, First Out): Remove the oldest message(s)
+      channelHistory = channelHistory.slice(-this.config.maxHistoryLength);
+
+      // Update the history in the map
+      this.chatHistories.set(channelKey, channelHistory);
+
+      console.log(
+        `Channel ${channelKey}: Maintaining rolling buffer of ${this.config.maxHistoryLength} messages`
+      );
+    }
+  }
+
+  /**
+   * Get the current size of the history for a specific channel
+   * @param channelInfo The channel information
+   * @returns The number of messages in the channel's history
+   */
+  getChannelHistorySize(channelInfo: {
+    network: string;
+    channel: string;
+  }): number {
+    const channelHistory = this.getChannelHistory(channelInfo);
+    return channelHistory.length;
+  }
+
+  /**
+   * Get a summary of the rolling buffers for all channels
+   * @returns A map of channel keys to their history sizes
+   */
+  getHistorySummary(): Record<string, number> {
+    const summary: Record<string, number> = {};
+
+    for (const [channelKey, history] of this.chatHistories.entries()) {
+      summary[channelKey] = history.length;
+    }
+
+    return summary;
+  }
+
+  /**
    * Process a message using tools as needed until a final response is ready
    * This method will make multiple API calls if necessary to handle all tool requests
    * @param input The user's message
@@ -205,6 +436,174 @@ export class Anthropic {
     },
     maxRetries: number = 3
   ): Promise<string> {
+    // First, evaluate if this input requires a tool response
+    // List of patterns that typically require tool usage
+    const toolRequiringPatterns = [
+      /current price|market value|stock price|coin price|crypto/i,
+      /calculate|compute|convert|math|equation/i,
+      /execute|run|code|program|script|function/i,
+      /search|lookup|find information|latest news|headline/i,
+      /weather|forecast|temperature/i,
+      /translate|translation/i,
+      /youtube|video|stream/i,
+      /stock market|stock price|nasdaq|dow/i,
+      /url|link|website/i,
+      /database|query|data/i,
+      /file|document|read/i,
+      /reverse|count|sort|list|format|output|write|generate|print/i,
+      /random.*fact|fact.*about/i,
+      /how many|what is|when is|where is/i,
+      /pokemon|pokedex/i,
+      /create|make|develop|build/i,
+      /fetch|crawl|download|get|retrieve/i,
+      /compare|comparison|parallel|similar|like|resembles/i,
+      /fictional|fiction|story|book|novel|tale|movie/i,
+      /give me|tell me|show me|get me|find me/i, // Common request patterns
+      /facts|information|details|data about/i, // Common information seeking patterns
+      /pdf|doc|document|text|article/i, // Document-related patterns
+      /summarize|summary|tldr|tl;dr|explain|breakdown/i, // Summarization patterns
+    ];
+
+    // Helper function to detect implicit code/computation requests
+    const detectImplicitToolRequest = (query: string): boolean => {
+      // Check for URLs in the query - ANY query with a URL should be treated as a tool request
+      if (/https?:\/\/\S+/i.test(query)) {
+        console.log("Matched URL in request");
+        return true;
+      }
+
+      // Check for PDF or document summarization requests
+      if (
+        /(summarize|tldr|tl;dr).+?(pdf|document|article|page|post)/i.test(query)
+      ) {
+        console.log("Matched document summarization request");
+        return true;
+      }
+
+      // ANY request that has "write code" should ALWAYS be considered a tool request
+      if (
+        /(write|create|generate|make).{0,20}(code|program|script)/i.test(query)
+      ) {
+        console.log("Matched explicit code generation request");
+        return true;
+      }
+
+      // ANY request with "code that" should be considered a tool request
+      if (/code that/i.test(query)) {
+        console.log("Matched 'code that' pattern");
+        return true;
+      }
+
+      // Check for a string that needs reversal
+      if (/reverse this/i.test(query) || /reverse the/i.test(query)) {
+        return true;
+      }
+
+      // Check for any query about creating/generating/writing code
+      if (
+        /(create|make|write|generate|output|print).*(code|program|script|function)/i.test(
+          query
+        )
+      ) {
+        return true;
+      }
+
+      // Check for any string query mentioning operations
+      if (/(this|the) string/i.test(query)) {
+        return true;
+      }
+
+      // Check for simple calculation patterns (numbers with operators between them)
+      if (/\d+\s*[\+\-\*\/\^]\s*\d+/.test(query)) {
+        return true;
+      }
+
+      // Check for requests that likely require writing some code
+      if (
+        /\b(in|using)\s+(python|javascript|js|ruby|go|golang|c\+\+|java|php|bash|shell)\b/i.test(
+          query
+        )
+      ) {
+        return true;
+      }
+
+      // Check for multi-step operations involving searching and processing
+      if (/search(es)? for.*then/i.test(query) || /find.*then/i.test(query)) {
+        console.log("Matched multi-step search operation");
+        return true;
+      }
+
+      // Handle requests for fetching/processing news or headlines
+      if (/news|headline|article/i.test(query)) {
+        return true;
+      }
+
+      // Look for comparisons between real-world and fictional elements
+      if (
+        /(compare|parallel|similar|match).*(fiction|story|book|novel)/i.test(
+          query
+        ) ||
+        /(fiction|story|book|novel).*(compare|parallel|similar|like)/i.test(
+          query
+        )
+      ) {
+        console.log("Matched comparison between real data and fiction");
+        return true;
+      }
+
+      // Detect requests with "that parallels" or similar phrasing
+      if (/that parallel|parallels|that matches|matches with/i.test(query)) {
+        console.log("Matched 'parallels' pattern");
+        return true;
+      }
+
+      return false;
+    };
+
+    // Check if the input contains any pattern suggesting tool usage
+    let mightRequireTool = toolRequiringPatterns.some((pattern) => {
+      const matches = pattern.test(input);
+      if (matches) {
+        console.log(`Matched tool pattern: ${pattern}`);
+      }
+      return matches;
+    });
+
+    // If no pattern matched, try detecting implicit tool requests
+    if (!mightRequireTool) {
+      mightRequireTool = detectImplicitToolRequest(input);
+      if (mightRequireTool) {
+        console.log(`Detected implicit tool request in: "${input}"`);
+      }
+    }
+
+    // Special case for "write code" to ensure these are ALWAYS handled
+    if (
+      !mightRequireTool &&
+      /(write|create|generate).{0,10}(code|program|script)/i.test(input)
+    ) {
+      console.log(`Treating as code generation request: "${input}"`);
+      mightRequireTool = true;
+    }
+
+    // If still in doubt, check for "write" or "generate" as a broader catch-all
+    if (!mightRequireTool && /write|generate/i.test(input)) {
+      console.log(
+        `Treating as potential tool query due to 'write/generate': "${input}"`
+      );
+      mightRequireTool = true;
+    }
+
+    // If the input doesn't match any tool-requiring pattern, return empty response
+    if (!mightRequireTool) {
+      console.log(`Skipping response for non-tool query: "${input}"`);
+      return "";
+    }
+
+    // Mark this query as pre-identified as requiring tools
+    const preIdentifiedAsToolQuery = true;
+    console.log(`Processing tool-requiring query: "${input}"`);
+
     // Get all available tools
     const toolDefinitions = this.toolRegistry.getAllToolDefinitions();
     let enhancedSystemPrompt = this.config.systemPrompt;
@@ -249,14 +648,86 @@ export class Anthropic {
       "\n6. ALL responses must remain under 500 characters.";
     enhancedSystemPrompt +=
       '\n7. NEVER say phrases like "I can use a tool" or "Let me check" - just use the tool if needed.';
+    enhancedSystemPrompt +=
+      "\n8. If the request doesn't require a tool, DO NOT RESPOND AT ALL. Return an empty string.";
+
+    // Store the original user message to chat history
+    this.addToHistory("user", input, serverInfo);
 
     // Initial API call with tools always included
     let response = await this.sendRequest(
       input,
       maxRetries,
       enhancedSystemPrompt,
-      toolDefinitions // Always pass tools to every request
+      toolDefinitions, // Always pass tools to every request
+      serverInfo // Pass server info for channel context
     );
+
+    // Check if the response contains any tool usage
+    const hasToolUse = response.content.some(
+      (block: any) => block.type === "tool_use"
+    );
+
+    // Extract any text content for evaluation
+    let textContent = "";
+    for (const block of response.content) {
+      if (block.type === "text") {
+        textContent += block.text;
+      }
+    }
+
+    // List of indicators that signify the LLM thinks no tool is needed
+    const noToolIndicators = [
+      "I don't need to use any tools for this",
+      "This doesn't require a tool",
+      "I can answer this without tools",
+      "No tool needed",
+      "This is general knowledge",
+      "I shouldn't respond",
+      "No response",
+    ];
+
+    // Check if response contains those indicators
+    const containsNoToolIndicator = noToolIndicators.some((indicator) =>
+      textContent.toLowerCase().includes(indicator.toLowerCase())
+    );
+
+    // If no tool is being used, we have two cases:
+    // 1. Regular case: No tool use + contains indicator = stay silent
+    // 2. Override case: No tool use + pre-identified as tool query + meaningful text = RESPOND ANYWAY
+    if (!hasToolUse) {
+      // For pre-identified tool queries with meaningful text responses, respond anyway
+      if (
+        preIdentifiedAsToolQuery &&
+        textContent.trim().length > 5 &&
+        !containsNoToolIndicator
+      ) {
+        console.log(
+          `No tool used but responding anyway to pre-identified tool query: "${input}"`
+        );
+        // Format the text response for IRC
+        const formattedResponse = this.formatForIRC(textContent);
+        this.addToHistory("assistant", formattedResponse, serverInfo);
+        return formattedResponse;
+      }
+
+      // For all other cases where no tool is used, stay silent
+      if (containsNoToolIndicator || !textContent.trim()) {
+        console.log(`Not responding to: "${input}" (no tool required)`);
+        return ""; // Return empty string to stay silent
+      }
+
+      // If we have text content but no explicit indicators, respond with it
+      if (textContent.trim()) {
+        console.log(`Responding with text content for tool query: "${input}"`);
+        const formattedResponse = this.formatForIRC(textContent);
+        this.addToHistory("assistant", formattedResponse, serverInfo);
+        return formattedResponse;
+      }
+
+      // Fallback: stay silent if we have no content
+      return "";
+    }
 
     let attempts = 0;
     const maxAttempts = this.config.maxToolAttempts * 2; // Multiply to allow for multiple tool usage
@@ -298,8 +769,13 @@ export class Anthropic {
       }
     }
 
-    // Add assistant response to history
-    this.addToHistory("assistant", textResponse);
+    // Format the response for IRC
+    textResponse = this.formatForIRC(textResponse);
+
+    // Add the assistant response to channel-specific history if not empty
+    if (textResponse.trim()) {
+      this.addToHistory("assistant", textResponse, serverInfo);
+    }
 
     return textResponse;
   }
@@ -310,6 +786,7 @@ export class Anthropic {
    * @param maxRetries Maximum number of retries
    * @param customSystemPrompt Optional custom system prompt
    * @param toolDefinitions Optional array of tool definitions to include
+   * @param channelInfo The channel information
    * @param currentRetry Current retry attempt number
    * @returns Anthropic API response
    * @private
@@ -319,11 +796,16 @@ export class Anthropic {
     maxRetries: number = 3,
     customSystemPrompt?: string,
     toolDefinitions?: any[],
+    channelInfo?: {
+      network: string;
+      channel: string;
+      user?: string;
+    },
     currentRetry: number = 0
   ): Promise<any> {
     try {
-      // Get messages from history (which already includes the current user message)
-      const messages = this.createMessagesFromHistory();
+      // Get channel-specific messages from history
+      const messages = this.createMessagesFromHistory(channelInfo);
 
       const requestOptions: any = {
         model: this.config.model,
@@ -369,48 +851,13 @@ export class Anthropic {
           maxRetries,
           customSystemPrompt,
           toolDefinitions,
+          channelInfo,
           currentRetry + 1
         );
       }
 
       // For other errors or if we've exhausted retries, throw the error
       throw error;
-    }
-  }
-
-  /**
-   * Create message array from chat history for the API request
-   * @returns Array of message objects for the API
-   * @private
-   */
-  private createMessagesFromHistory(): any[] {
-    // If no history, just return an empty array (the latest user message will be added by the caller)
-    if (this.chatHistory.length === 0) {
-      return [];
-    }
-
-    // Convert the chat history to the format expected by the API
-    return this.chatHistory.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
-  }
-
-  /**
-   * Add a message to the chat history
-   * @param role The role of the message sender
-   * @param content The message content
-   * @private
-   */
-  private addToHistory(role: "user" | "assistant", content: string): void {
-    this.chatHistory.push({ role, content });
-
-    // Trim history if it exceeds the maximum length
-    if (this.chatHistory.length > this.config.maxHistoryLength) {
-      // Remove oldest messages to maintain the maximum length
-      this.chatHistory = this.chatHistory.slice(
-        this.chatHistory.length - this.config.maxHistoryLength
-      );
     }
   }
 
@@ -549,7 +996,7 @@ export class Anthropic {
         if (textContent.length > 0) {
           // Use the text content if available
           const formattedText = this.formatForIRC(textContent);
-          this.addToHistory("assistant", formattedText);
+          this.addToHistory("assistant", formattedText, serverInfo);
           return formattedText;
         }
 
@@ -588,14 +1035,16 @@ export class Anthropic {
         const toolResult = await tool.handle(toolInput);
         console.log(`Tool ${toolName} execution result:`, toolResult);
 
-        // Track this tool use in the chat history
-        this.addToHistory(
-          "assistant",
-          `I used the ${toolName} tool with: ${JSON.stringify(toolInput)}`
-        );
+        // Track this tool use in internal logs but not in the chat history
+        // This line is commented out to avoid adding tool usage details to the chat history
+        // this.addToHistory(
+        //   "assistant",
+        //   `I used the ${toolName} tool with: ${JSON.stringify(toolInput)}`,
+        //   serverInfo
+        // );
 
         // Send the tool result back to Claude for interpretation
-        const messages = this.createMessagesFromHistory();
+        const messages = this.createMessagesFromHistory(serverInfo);
 
         // Add the tool use and result
         messages.push({
@@ -630,8 +1079,13 @@ export class Anthropic {
           serverInfo
         );
 
-        // Save the tool result messages to our history
-        this.addToHistory("user", `Tool result: ${JSON.stringify(toolResult)}`);
+        // Save the tool result for internal processing but not in user-visible chat history
+        // This is now stored only in the message array for Claude, not in the persisted chat history
+        // this.addToHistory(
+        //   "user",
+        //   `Tool result: ${JSON.stringify(toolResult)}`,
+        //   serverInfo
+        // );
 
         // Check if the response also tries to use tools
         if (
@@ -721,8 +1175,8 @@ export class Anthropic {
         // Format for IRC
         finalResponse = this.formatForIRC(finalResponse);
 
-        // Add the assistant's final response to history
-        this.addToHistory("assistant", finalResponse);
+        // Add the assistant's final response to channel-specific history
+        this.addToHistory("assistant", finalResponse, serverInfo);
 
         return finalResponse;
       } catch (error) {
@@ -762,11 +1216,34 @@ export class Anthropic {
     console.log(`Falling back to response without tools: ${errorReason}`);
 
     try {
-      // Make a simple request without any tool calls
-      const fallbackResponse = await this.sendFallbackRequest(
-        originalInput,
-        serverInfo
-      );
+      // Create a more directive prompt to encourage response for likely tool queries
+      let fallbackPrompt = this.config.systemPrompt;
+
+      // Append special instructions for likely tool queries
+      if (
+        originalInput.match(
+          /(write|code|search|find|compare|parallel|get|lookup|fiction)/i
+        )
+      ) {
+        fallbackPrompt +=
+          "\n\nIMPORTANT OVERRIDE: This query has been pre-identified as requiring a tool response. " +
+          "Even if no ideal tool is available, you SHOULD still provide a helpful response rather than staying silent. " +
+          "If asked to compare news with fiction or find parallels, provide relevant fictional examples that might match current events. " +
+          "For code requests, provide the best code you can generate. For search/lookup requests, provide factual information from your knowledge.";
+      }
+
+      // Make a simple request without any tool calls but with our enhanced prompt
+      const fallbackResponse = await this.client.messages.create({
+        model: this.config.model,
+        max_tokens: this.config.maxTokens,
+        system: fallbackPrompt,
+        messages: [
+          {
+            role: "user",
+            content: originalInput,
+          },
+        ],
+      });
 
       // Extract text from the response
       let response = "";
@@ -779,90 +1256,13 @@ export class Anthropic {
       // Format for IRC
       response = this.formatForIRC(response);
 
-      // Add to history
-      this.addToHistory("assistant", response);
+      // Add to channel-specific history
+      this.addToHistory("assistant", response, serverInfo);
 
       return response;
     } catch (error) {
       console.error("Error in fallback response:", error);
       return "Sorry, I couldn't process your request at this time.";
-    }
-  }
-
-  /**
-   * Send a fallback request to Anthropic with retry logic for overloaded errors
-   * @param input The user's message
-   * @param serverInfo Optional server information to include in the prompt
-   * @param maxRetries Maximum number of retries
-   * @param currentRetry Current retry attempt number
-   * @returns Anthropic API response
-   * @private
-   */
-  private async sendFallbackRequest(
-    input: string,
-    serverInfo?: {
-      network: string;
-      channel: string;
-      user: string;
-    },
-    maxRetries: number = 3,
-    currentRetry: number = 0
-  ): Promise<any> {
-    try {
-      // Create a custom system prompt with server info if provided
-      let customSystemPrompt = this.config.systemPrompt;
-      if (serverInfo) {
-        customSystemPrompt = customSystemPrompt
-          .replace("{network}", serverInfo.network)
-          .replace("{channel}", serverInfo.channel)
-          .replace("{user}", serverInfo.user);
-      } else {
-        // If no server info is provided, replace placeholders with generic values
-        customSystemPrompt = customSystemPrompt
-          .replace("{network}", "Unknown Network")
-          .replace("{channel}", "Unknown Channel")
-          .replace("{user}", "Unknown User");
-      }
-
-      customSystemPrompt +=
-        "\nDo not attempt to use any tools for this message.";
-
-      return await this.client.messages.create({
-        model: this.config.model,
-        max_tokens: this.config.maxTokens,
-        system: customSystemPrompt,
-        messages: [
-          {
-            role: "user",
-            content: input,
-          },
-        ],
-      });
-    } catch (error: any) {
-      // Check if this is an overloaded error
-      if (
-        error?.response?.data?.type === "error" &&
-        error?.response?.data?.error?.type === "overloaded_error" &&
-        currentRetry < maxRetries
-      ) {
-        console.log(
-          `Overloaded error received in fallback, retrying after 1 second (attempt ${
-            currentRetry + 1
-          }/${maxRetries})`
-        );
-        // Wait for 1 second
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        // Retry the request
-        return this.sendFallbackRequest(
-          input,
-          serverInfo,
-          maxRetries,
-          currentRetry + 1
-        );
-      }
-
-      // For other errors or if we've exhausted retries, throw the error
-      throw error;
     }
   }
 
@@ -935,5 +1335,23 @@ export class Anthropic {
     if (this.toolRegistry !== toolRegistry) {
       this.toolRegistry.close();
     }
+  }
+
+  /**
+   * Clear the chat history for a specific channel
+   * @param channelInfo The channel information
+   */
+  clearChannelHistory(channelInfo: { network: string; channel: string }): void {
+    const channelKey = getChannelKey(channelInfo);
+    this.chatHistories.set(channelKey, []);
+    console.log(`Cleared chat history for channel: ${channelKey}`);
+  }
+
+  /**
+   * Clear all chat histories
+   */
+  clearAllHistories(): void {
+    this.chatHistories.clear();
+    console.log("Cleared all chat histories");
   }
 }
